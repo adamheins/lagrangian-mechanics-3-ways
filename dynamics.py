@@ -61,8 +61,7 @@ class SymbolicDynamics:
     # Christoffel symbols and Coriolis matrix
     dMdq = M.diff(q)
     Γ = sym.permutedims(dMdq, (2, 1, 0)) - 0.5 * dMdq
-    C = sym.tensorcontraction(sym.tensorproduct(dq, Γ), (0, 2))
-    C = sym.Matrix(C)
+    C = sym.tensorcontraction(sym.tensorproduct(dq, Γ), (0, 2)).tomatrix()
 
     # gravity vector
     V = G * (M1 * P1[1] + M2 * P2[1] + M3 * P3[1])
@@ -137,7 +136,8 @@ class ManualDynamics:
 
         Γ = dMdq.T - 0.5 * dMdq
 
-        # Construct matrix of Christoffel symbols
+        # The above is equivalent to but more efficient than this for-loop
+        # construction:
         # Γ = np.zeros((3, 3, 3))
         # for i in range(3):
         #     for j in range(3):
@@ -202,8 +202,10 @@ class AutoDiffDynamics:
 
     @classmethod
     def christoffel_matrix(cls, q):
+        # Here dMdq is transposed with respect to the dMdq's in the manual and
+        # symbolic implementations. Thus, the expression for Γ is also
+        # transposed, giving the same end result.
         dMdq = jax.jacfwd(cls.mass_matrix)(q)
-        # TODO note how this is transposed w.r.t. to above
         Γ = dMdq - 0.5 * dMdq.T
         return Γ
 
