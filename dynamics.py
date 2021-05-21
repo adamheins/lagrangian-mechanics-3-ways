@@ -25,53 +25,61 @@ G1 = np.diag(np.array([M1, M1, 0]))
 G2 = np.diag(np.array([M2, M2, I2]))
 G3 = np.diag(np.array([M3, M3, I3]))
 
-
 # gravity
 G = 9.8
 
 
-def symbolic_dynamics(time):
+class SymbolicDynamics:
+    # joint configuration and velocity are functions of time
     t = sym.symbols("t")
-    q = sym.Matrix(
-        [sym.Function("q1")(t), sym.Function("q2")(t), sym.Function("q3")(t)]
+    q = sym.Array(
+        [sym.Function("x1")(t), sym.Function("θ2")(t), sym.Function("θ3")(t)]
     )
     dq = q.diff(t)
 
-    x1 = q[0] + LX + 0.5 * L1 * sym.cos(q[1])
-    y1 = LY + 0.5 * L1 * sym.sin(q[1])
-    x2 = q[0] + LX + L1 * sym.cos(q[1]) + 0.5 * L2 * sym.cos(q[1] + q[2])
-    y2 = LY + L1 * sym.sin(q[1]) + 0.5 * L2 * sym.sin(q[1] + q[2])
+    # link poses
+    P1 = sym.Matrix([q[0], 0, 0])
+    P2 = P1 + sym.Matrix([
+        LX + 0.5 * L2 * sym.cos(q[1]),
+        LY + 0.5 * L2 * sym.sin(q[1]),
+        q[1],
+    ])
+    P3 = P2 + sym.Matrix([
+        0.5 * L2 * sym.cos(q[1]) + 0.5 * L3 * sym.cos(q[1] + q[2]),
+        0.5 * L2 * sym.sin(q[1]) + 0.5 * L3 * sym.sin(q[1] + q[2]),
+        q[2],
+    ])
 
-    dx1 = x1.diff(t)
-    dy1 = y1.diff(t)
-    dx2 = x2.diff(t)
-    dy2 = y2.diff(t)
+    # link Jacobians
+    J1 = P1.jacobian(q)
+    J2 = P2.jacobian(q)
+    J3 = P3.jacobian(q)
 
-    # Potential energy
-    Pb = 0
-    P1 = M1 * G * y1
-    P2 = M2 * G * y2
-    P = Pb + P1 + P2
+    # mass matrix
+    M = J1.transpose() * G1 * J1 + J2.transpose() * G2 * J2 + J3.transpose() * G3 * J3
 
-    # Kinetic energy
-    Kb = 0.5 * Mb * dq[0] ** 2
-    K1 = 0.5 * M1 * (dx1 ** 2 + dy1 ** 2) + 0.5 * I1 * dq[1] ** 2
-    K2 = 0.5 * M2 * (dx2 ** 2 + dy2 ** 2) + 0.5 * I2 * (dq[1] + dq[2]) ** 2
-    K = Kb + K1 + K2
+    # Christoffel symbols and Coriolis matrix
+    dMdq = M.diff(q)
+    Γ = sym.permutedims(dMdq, (2, 1, 0)) - 0.5 * dMdq
+    C = sym.tensorcontraction(sym.tensorproduct(dq, Γ), (0, 2))
+    C = sym.Matrix(C)
 
-    # Lagrangian
-    L = K - P
+    # gravity vector
+    V = G * (M1 * P1[1] + M2 * P2[1] + M3 * P3[1])
+    g = V.diff(q)
 
-    # Generalized forces
-    tau = L.diff(dq).diff(t) - L.diff(q)
+    # compile functions to numerical code
+    mass_matrix = sym.lambdify([q], M)
+    coriolis_matrix = sym.lambdify([q, dq], C)
+    gravity_vector = sym.lambdify([q], g)
 
-    return tau.subs({q[0]: sym.sin(t), q[1]: t, q[2]: t * t, t: time}).doit()
+    @classmethod
+    def tau(cls, q, dq, ddq):
+        M = cls.mass_matrix(q)
+        C = cls.coriolis_matrix(q, dq)
+        g = cls.gravity_vector(q)
 
-
-def configuration(t, np=np):
-    """ Define joint configuration as function of time. """
-    q = np.array([np.sin(t), t, t * t])
-    return q
+        return M @ ddq + C @ dq + g
 
 
 class ManualDynamics:
@@ -123,22 +131,18 @@ class ManualDynamics:
         ])
 
         dMdq = np.zeros((3, 3, 3))
-        dMdq[:, :, 0] = dMdθ1
-        dMdq[:, :, 1] = dMdθ2
-        dMdq[:, :, 2] = dMdθ3
+        dMdq[0, :, :] = dMdθ1
+        dMdq[1, :, :] = dMdθ2
+        dMdq[2, :, :] = dMdθ3
 
-        # Γ = dMdq - 0.5 * dMdq.T
+        Γ = dMdq.T - 0.5 * dMdq
 
         # Construct matrix of Christoffel symbols
-        # TODO: note transpose on dMdq: difference b/t math order and numpy
-        # order
-        Γ = np.zeros((3, 3, 3))
-        for i in range(3):
-            for j in range(3):
-                for k in range(3):
-                    # Γ[i, j, k] = 0.5*(dMdq[k, j, i] + dMdq[i, k, j] - dMdq[i, j, k])  # mine
-                    # Γ[i, j, k] = dMdq[k, j, i] - 0.5*dMdq[i, j, k]  # mine
-                    Γ[i, j, k] = 0.5*(dMdq.T[k, j, i] + dMdq.T[k, i, j] - dMdq.T[i, j, k])  # Spong
+        # Γ = np.zeros((3, 3, 3))
+        # for i in range(3):
+        #     for j in range(3):
+        #         for k in range(3):
+        #             Γ[i, j, k] = 0.5*(dMdq[k, j, i] + dMdq[k, i, j] - dMdq[i, j, k])
         return Γ
 
     @classmethod
@@ -199,6 +203,7 @@ class AutoDiffDynamics:
     @classmethod
     def christoffel_matrix(cls, q):
         dMdq = jax.jacfwd(cls.mass_matrix)(q)
+        # TODO note how this is transposed w.r.t. to above
         Γ = dMdq - 0.5 * dMdq.T
         return Γ
 
@@ -228,32 +233,13 @@ class AutoDiffDynamics:
 
 
 def main():
-    # tau_func = auto_diff_dynamics()
-    #
-    # q_func = partial(configuration, np=jnp)
-    # dq_func = jax.jit(jax.jacfwd(partial(configuration, np=jnp)))
-    # ddq_func = jax.jit(jax.jacfwd(dq_func))
-    #
-    # t = 1.0
-    # q = q_func(t)
-    # dq = dq_func(t)
-    # ddq = ddq_func(t)
-    #
-    # dMdq_func = jax.jacfwd(partial(calc_mass_matrix, np=jnp))
-    # M = calc_mass_matrix(q)
-    # g = calc_gravity_vector(q)
-    # dMdq = dMdq_func(q)
     q = np.array([0, 0.5, 0.5])
     dq = np.array([0.5, 1, 0])
     ddq = np.array([0.5, 1, 0])
 
     print(ManualDynamics.tau(q, dq, ddq))
     print(AutoDiffDynamics.tau(q, dq, ddq))
-
-    # print(np.array(symbolic_dynamics(t)).astype(np.float64).flatten())
-    # print(manual_dynamics_mat(q, dq, ddq))
-
-    # IPython.embed()
+    print(SymbolicDynamics.tau(q, dq, ddq))
 
 
 if __name__ == "__main__":
