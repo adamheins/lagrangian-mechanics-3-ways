@@ -1,6 +1,6 @@
 # Lagrangian Mechanics Three Ways
 
-This is source code for a my [blog
+This is the source code for my [blog
 post](https://adamheins.com/blog/lagrangian-mechanics-three-ways) on
 implementing a robot's dynamic equations of motion three ways:
 1. with manual differentiation,
